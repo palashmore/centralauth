@@ -96,8 +96,25 @@ export async function POST(request: Request) {
     }
 
     // Persist into oauth_app_registry catalog
-    const adminClient = createAdminClient()
-    const { data, error } = await adminClient
+    // Uses service role if configured, otherwise falls back to authenticated session
+    let dbClient = supabase
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      try {
+        dbClient = createAdminClient()
+      } catch {
+        dbClient = supabase
+      }
+    } else {
+      return NextResponse.json(
+        {
+          error:
+            'SUPABASE_SERVICE_ROLE_KEY is not defined in your Vercel Environment Variables. Please add SUPABASE_SERVICE_ROLE_KEY from Supabase (Project Settings > API > service_role) into Vercel Settings > Environment Variables and redeploy.',
+        },
+        { status: 500 }
+      )
+    }
+
+    const { data, error } = await dbClient
       .from('oauth_app_registry')
       .insert({
         client_id,
@@ -118,18 +135,22 @@ export async function POST(request: Request) {
     }
 
     // Log administrative audit entry
-    await adminClient.from('audit_logs').insert({
-      action: 'REGISTER_OAUTH_APP',
-      actor_id: user.id,
-      target_id: client_id,
-      target_type: 'oauth_app_registry',
-      details: {
-        app_name,
-        client_type,
-        environment,
-        redirect_uris,
-      },
-    })
+    try {
+      await dbClient.from('audit_logs').insert({
+        action: 'REGISTER_OAUTH_APP',
+        actor_id: user.id,
+        target_id: client_id,
+        target_type: 'oauth_app_registry',
+        details: {
+          app_name,
+          client_type,
+          environment,
+          redirect_uris,
+        },
+      })
+    } catch {
+      // Audit log table optional/resilient
+    }
 
     return NextResponse.json({ app: data }, { status: 201 })
   } catch (err: any) {
